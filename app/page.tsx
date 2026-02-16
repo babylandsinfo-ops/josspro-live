@@ -7,7 +7,18 @@ import {
   FileText, Loader2, RefreshCw, Wallet, Truck, DollarSign, Activity 
 } from "lucide-react";
 import { db } from "@/lib/firebase"; 
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { collection, getDocs } from "firebase/firestore";
+
+// ১. স্পেশাল ফাংশন: যা টেক্সট থেকে শুধু নাম্বার বের করে আনবে
+const parseNumber = (value: any) => {
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    // যেকোনো টেক্সট বা সিম্বল সরিয়ে শুধু সংখ্যা বের করবে
+    const cleaned = value.replace(/[^\d.-]/g, ""); 
+    return parseFloat(cleaned) || 0;
+  }
+  return 0;
+};
 
 export default function Home() {
   const [stats, setStats] = useState({
@@ -16,8 +27,8 @@ export default function Home() {
     pendingOrders: 0,
     inventoryValue: 0,
     activeCustomers: 0,
-    courierPending: 0, // কুরিয়ারে আটকে থাকা টাকা
-    totalSales: 0      // মোট বিক্রি
+    courierPending: 0, 
+    totalSales: 0      
   });
   
   const [loading, setLoading] = useState(true);
@@ -25,71 +36,70 @@ export default function Home() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // ১. অর্ডার ডাটা আনা
+      // --- ১. অর্ডার ডাটা আনা ---
       const ordersSnapshot = await getDocs(collection(db, "orders"));
       
       let grossProfit = 0; 
       let pendingCount = 0;
-      let courierDue = 0; // কুরিয়ারে যা আছে
-      let sales = 0;      // মোট সেলস
+      let courierDue = 0; 
+      let sales = 0;      
       const customers = new Set();
 
       ordersSnapshot.docs.forEach((doc) => {
         const data = doc.data();
-        const price = Number(data.salePrice) || 0;
+        const price = parseNumber(data.salePrice);
+        const totalAmount = parseNumber(data.totalAmount);
+        const profit = parseNumber(data.netProfit);
         
-        // লাভ হিসাব (আপনার লজিক অনুযায়ী)
-        grossProfit += Number(data.netProfit) || 0; 
-
-        // পেন্ডিং অর্ডার সংখ্যা
+        grossProfit += profit;
         if (data.status === "Pending") pendingCount++;
-
-        // কাস্টমার সংখ্যা
         if (data.phone) customers.add(data.phone);
 
-        // কুরিয়ার পেন্ডিং ব্যালেন্স (In Transit + Delivered but unpaid)
-        if (data.status === "In Transit") {
-            courierDue += price;
+        // কুরিয়ার পেন্ডিং (In Transit + Delivered + Pending)
+        if (["Pending", "In Transit", "Delivered"].includes(data.status)) {
+            courierDue += totalAmount; 
         }
-
-        // টোটাল সেলস (delivered)
         if (data.status === "Delivered") {
             sales += price;
-            // অপশনাল: যদি ডেলিভারি হওয়ার পর টাকা হাতে না আসে, তবে এটাও courierDue তে যোগ করতে পারেন
         }
       });
 
-      // ২. ইনভেন্টরি ডাটা আনা
-      const inventorySnapshot = await getDocs(collection(db, "products")); // বা "inventory"
-      let stockValue = 0;
+      // --- ২. ইনভেন্টরি ডাটা আনা ---
+      const inventorySnapshot = await getDocs(collection(db, "inventory")); 
+      let stockVal = 0;
+      
       inventorySnapshot.docs.forEach((doc) => {
         const item = doc.data();
-        // স্টক * কেনা দাম
-        stockValue += (Number(item.purchasePrice) || 0) * (Number(item.stock) || 0);
+        
+        // আপনার ডাটাবেসের সঠিক ফিল্ড (buyPrice, stock) ব্যবহার করছি
+        const cost = parseNumber(item.buyPrice) || parseNumber(item.purchasePrice) || 0;
+        const qty = parseNumber(item.stock) || parseNumber(item.quantity) || 0;
+        
+        stockVal += (cost * qty);
       });
 
-      // ৩. খরচ (Expenses) আনা
+      // --- ৩. খরচ (Expenses) আনা ---
       const expensesSnapshot = await getDocs(collection(db, "expenses"));
       let totalExpenses = 0;
       expensesSnapshot.docs.forEach((doc) => {
-        totalExpenses += Number(doc.data().amount) || 0;
+        totalExpenses += parseNumber(doc.data().amount);
       });
 
-      // ফাইনাল লাভ ক্যালকুলেশন
+      // ফাইনাল লাভ
       const finalNetProfit = grossProfit - totalExpenses;
 
       setStats({
         totalNetProfit: finalNetProfit,
         totalOrders: ordersSnapshot.size,
         pendingOrders: pendingCount,
-        inventoryValue: stockValue,
+        inventoryValue: stockVal,
         activeCustomers: customers.size,
         courierPending: courierDue,
         totalSales: sales
       });
       
     } catch (error) {
-      console.error("Error:", error);
+      console.error("Error fetching dashboard data:", error);
     } finally {
       setLoading(false);
     }
@@ -108,14 +118,13 @@ export default function Home() {
     );
   }
 
-  // কোম্পানির মোট ভ্যালু = (স্টক ভ্যালু + কুরিয়ার ডিউ + হাতে থাকা ক্যাশ)
-  // হাতে থাকা ক্যাশ (অনুমান) = মোট লাভ (Profit)
+  // কোম্পানি ভ্যালু (স্টক + মার্কেট ডিউ + ক্যাশ)
   const totalCompanyValue = stats.inventoryValue + stats.courierPending + (stats.totalNetProfit > 0 ? stats.totalNetProfit : 0);
 
   return (
     <div className="p-6 space-y-8 animate-in fade-in duration-500 min-h-screen text-white">
       
-      {/* Header Section */}
+      {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-center bg-zinc-900 p-6 rounded-2xl border border-zinc-800 shadow-lg">
         <div>
           <h1 className="text-3xl font-bold flex items-center gap-3">
@@ -123,64 +132,31 @@ export default function Home() {
           </h1>
           <p className="text-zinc-400 mt-1">Business Overview & Asset Valuation</p>
         </div>
-        <button 
-            onClick={fetchData} 
-            className="mt-4 md:mt-0 p-3 bg-zinc-800 rounded-full hover:bg-zinc-700 transition-all border border-zinc-700 group"
-            title="Refresh Data"
-        >
+        <button onClick={fetchData} className="mt-4 md:mt-0 p-3 bg-zinc-800 rounded-full hover:bg-zinc-700 border border-zinc-700 group">
             <RefreshCw size={20} className="text-zinc-400 group-hover:text-white group-hover:rotate-180 transition-transform duration-500"/>
         </button>
       </div>
 
-      {/* --- Section 1: Business Performance (Sales & Profit) --- */}
+      {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        
-        {/* Net Profit Card */}
-        <StatCard 
-          title="Net Profit (Loss)" 
-          value={`৳ ${stats.totalNetProfit.toLocaleString()}`} 
-          icon={<TrendingUp size={24} />} 
-          // লাভ হলে সবুজ, লস হলে লাল
+        <StatCard title="Net Profit (Loss)" value={`৳ ${stats.totalNetProfit.toLocaleString()}`} icon={<TrendingUp size={24} />} 
           color={stats.totalNetProfit >= 0 ? "text-emerald-500" : "text-red-500"}
           bg={stats.totalNetProfit >= 0 ? "bg-emerald-500/10 border-emerald-500/20" : "bg-red-500/10 border-red-500/20"}
         />
-
-        <StatCard 
-            title="Total Orders" 
-            value={stats.totalOrders} 
-            icon={<ShoppingBag size={24} />} 
-            color="text-blue-500" 
-            bg="bg-blue-500/10 border-blue-500/20" 
-        />
-        
-        <StatCard 
-            title="Active Customers" 
-            value={stats.activeCustomers} 
-            icon={<Users size={24} />} 
-            color="text-purple-500" 
-            bg="bg-purple-500/10 border-purple-500/20" 
-        />
-
-        <StatCard 
-            title="Pending Orders" 
-            value={stats.pendingOrders} 
-            icon={<Loader2 size={24} />} 
-            color="text-orange-500" 
-            bg="bg-orange-500/10 border-orange-500/20" 
-        />
+        <StatCard title="Total Orders" value={stats.totalOrders} icon={<ShoppingBag size={24} />} color="text-blue-500" bg="bg-blue-500/10 border-blue-500/20" />
+        <StatCard title="Inventory Value" value={`৳ ${stats.inventoryValue.toLocaleString()}`} icon={<Package size={24} />} color="text-white" bg="bg-zinc-800 border-zinc-700" />
+        <StatCard title="Active Customers" value={stats.activeCustomers} icon={<Users size={24} />} color="text-purple-500" bg="bg-purple-500/10 border-purple-500/20" />
       </div>
 
       <hr className="border-zinc-800" />
 
-      {/* --- Section 2: Company Assets (New Feature) --- */}
+      {/* Assets Breakdown */}
       <div>
-        <h2 className="text-xl font-bold text-zinc-400 mb-4 flex items-center gap-2">
-            <Wallet size={20}/> Company Assets Breakdown
-        </h2>
+        <h2 className="text-xl font-bold text-zinc-400 mb-4 flex items-center gap-2"><Wallet size={20}/> Company Assets Breakdown</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             
-            {/* Inventory Asset */}
-            <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800 hover:border-zinc-600 transition-colors">
+            {/* ১. স্টক ভ্যালু */}
+            <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                 <div className="flex items-center gap-4 mb-2">
                     <div className="p-3 bg-zinc-800 rounded-lg text-white"><Package size={24} /></div>
                     <p className="text-zinc-400 text-sm font-medium">Inventory Value</p>
@@ -189,73 +165,48 @@ export default function Home() {
                 <p className="text-xs text-zinc-500 ml-1 mt-1">Stock Purchase Cost</p>
             </div>
 
-            {/* Courier Asset */}
-            <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800 hover:border-zinc-600 transition-colors">
+            {/* ২. কুরিয়ার পেন্ডিং */}
+            <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                 <div className="flex items-center gap-4 mb-2">
                     <div className="p-3 bg-zinc-800 rounded-lg text-white"><Truck size={24} /></div>
-                    <p className="text-zinc-400 text-sm font-medium">Courier Pending</p>
+                    <p className="text-zinc-400 text-sm font-medium">Courier / Market Due</p>
                 </div>
                 <h3 className="text-2xl font-bold ml-1">৳ {stats.courierPending.toLocaleString()}</h3>
-                <p className="text-xs text-zinc-500 ml-1 mt-1">Market Due (In Transit)</p>
+                <p className="text-xs text-zinc-500 ml-1 mt-1">Pending COD Payments</p>
             </div>
 
-            {/* Total Value (Highlight) */}
+            {/* ৩. টোটাল ভ্যালু */}
             <div className="relative bg-gradient-to-br from-zinc-800 to-black p-6 rounded-2xl border border-zinc-700 overflow-hidden group">
-                <div className="absolute right-0 top-0 p-16 bg-red-600/10 blur-3xl rounded-full group-hover:bg-red-600/20 transition-all"></div>
-                
+                <div className="absolute right-0 top-0 p-16 bg-red-600/10 blur-3xl rounded-full"></div>
                 <div className="relative z-10">
                     <div className="flex items-center gap-4 mb-2">
-                        <div className="p-3 bg-red-600 rounded-lg text-white shadow-lg shadow-red-900/50"><DollarSign size={24} /></div>
+                        <div className="p-3 bg-red-600 rounded-lg text-white"><DollarSign size={24} /></div>
                         <p className="text-red-400 text-sm font-bold tracking-wider">TOTAL COMPANY VALUE</p>
                     </div>
                     <h3 className="text-3xl font-bold text-white ml-1">৳ {totalCompanyValue.toLocaleString()}</h3>
-                    <p className="text-xs text-zinc-400 ml-1 mt-1">Net Worth (Assets + Cash)</p>
+                    <p className="text-xs text-zinc-400 ml-1 mt-1">Net Worth (Assets + Due + Profit)</p>
                 </div>
             </div>
-
         </div>
       </div>
 
-      {/* --- Section 3: Quick Actions --- */}
+      {/* Actions */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <ActionCard 
-            title="Create New Order" 
-            desc="Send to Steadfast" 
-            href="/orders/new" 
-            color="bg-red-600 hover:bg-red-700" 
-            icon={<ShoppingBag size={20} />} 
-          />
-          <ActionCard 
-            title="Manage Inventory" 
-            desc="Update Stock" 
-            href="/inventory" 
-            color="bg-zinc-800 hover:bg-zinc-700" 
-            icon={<Package size={20} />} 
-          />
-          <ActionCard 
-            title="View All Orders" 
-            desc="Check Status" 
-            href="/orders" 
-            color="bg-zinc-800 hover:bg-zinc-700" 
-            icon={<FileText size={20} />} 
-          />
+          <ActionCard title="Create New Order" desc="Send to Steadfast" href="/orders/new" color="bg-red-600 hover:bg-red-700" icon={<ShoppingBag size={20} />} />
+          <ActionCard title="Manage Inventory" desc="Update Stock" href="/inventory" color="bg-zinc-800 hover:bg-zinc-700" icon={<Package size={20} />} />
+          <ActionCard title="View All Orders" desc="Check Status" href="/orders" color="bg-zinc-800 hover:bg-zinc-700" icon={<FileText size={20} />} />
       </div>
     </div>
   );
 }
 
-// Components for cleaner code
+// Components
 function StatCard({ title, value, icon, bg, color }: any) {
   return (
     <div className={`p-6 rounded-2xl border transition-all hover:scale-[1.02] ${bg}`}>
       <div className="flex justify-between items-start">
-        <div>
-          <p className="text-sm text-zinc-400 font-medium">{title}</p>
-          <h3 className={`text-2xl font-bold mt-2 ${color}`}>{value}</h3>
-        </div>
-        <div className={`p-3 rounded-xl bg-black/20 ${color}`}>
-          {icon}
-        </div>
+        <div><p className="text-sm text-zinc-400 font-medium">{title}</p><h3 className={`text-2xl font-bold mt-2 ${color}`}>{value}</h3></div>
+        <div className={`p-3 rounded-xl bg-black/20 ${color}`}>{icon}</div>
       </div>
     </div>
   );
